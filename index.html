@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AGV Warehouse Floor Dispatcher & Pathfinding</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #0b0f19; color: #f8fafc; margin: 15px; }
+        .container { max-width: 950px; margin: auto; }
+        .controls { background: #151e30; padding: 15px; border-radius: 8px; margin-bottom: 15px; display: flex; flex-wrap: wrap; gap: 10px; border: 1px solid #22314e; align-items: center; }
+        button, select { padding: 8px 14px; border-radius: 6px; border: 1px solid #334155; background: #0b0f19; color: #fff; font-size: 13px; font-weight: bold; cursor: pointer; }
+        button { background: #2563eb; border: none; }
+        button:hover { background: #1d4ed8; }
+        button.secondary { background: #334155; }
+        button.secondary:hover { background: #475569; }
+        #canvas { background: #151e30; border-radius: 8px; display: block; width: 100%; height: auto; border: 1px solid #22314e; cursor: pointer; }
+        .log-box { background: #151e30; padding: 12px; border-radius: 8px; margin-top: 15px; border: 1px solid #22314e; font-family: monospace; font-size: 12px; height: 120px; overflow-y: auto; }
+        .log-item { color: #fbbf24; margin-bottom: 4px; }
+        .stats { display: flex; gap: 20px; font-size: 13px; color: #38bdf8; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h3>Autonomous Guided Vehicle (AGV) Warehouse Dispatcher</h3>
+        <div class="controls">
+            <button onclick="spawnAGV()">Dispatch New AGV</button>
+            <button class="secondary" onclick="toggleMode()">Mode: <span id="modeText">Block Aisle</span></button>
+            <div class="stats">
+                <span>Active AGVs: <span id="agvCount">0</span></span>
+                <span>Completed Deliveries: <span id="deliveredCount">0</span></span>
+            </div>
+        </div>
+
+        <canvas id="canvas" width="900" height="450"></canvas>
+
+        <div class="log-box">
+            <div style="color: #38bdf8; font-weight: bold; margin-bottom: 6px;">Warehouse Telemetry & Fleet Logs:</div>
+            <div id="logContent"></div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Warehouse Grid dimensions (Cols x Rows)
+        const cols = 15;
+        const rows = 8;
+        const tileSize = 60;
+
+        // Grid cells: 0 = Open Aisle, 1 = Storage Pod, 2 = Blocked/Spill
+        let grid = Array(rows).fill(0).map(() => Array(cols).fill(0));
+
+        // Setup some initial storage racks
+        for (let r = 1; r < rows - 1; r++) {
+            for (let c = 2; c < cols - 2; c += 3) {
+                grid[r][c] = 1;
+                grid[r][c+1] = 1;
+            }
+        }
+
+        const stations = [
+            {x: 0, y: Math.floor(rows/2), name: "Charging Dock"},
+            {x: cols - 1, y: Math.floor(rows/2), name: "Packing Station"}
+        ];
+
+        let agvs = [];
+        let deliveredCount = 0;
+        let blockMode = true;
+
+        function logMessage(msg) {
+            const logContent = document.getElementById('logContent');
+            const div = document.createElement('div');
+            div.className = 'log-item';
+            div.innerText = `> [${new Date().toLocaleTimeString()}] ${msg}`;
+            logContent.prepend(div);
+            if (logContent.children.length > 25) logContent.lastChild.remove();
+        }
+
+        class AGV {
+            constructor(id) {
+                this.id = id;
+                this.x = stations[0].x;
+                this.y = stations[0].y;
+                this.target = null;
+                this.path = [];
+                this.state = "IDLE"; // IDLE, MOVING_TO_PICKUP, MOVING_TO_PACKING
+                this.color = `hsl(${Math.random() * 360}, 80%, 60%)`;
+                this.assignNewTask();
+            }
+
+            assignNewTask() {
+                // Pick a random open storage rack or target
+                let targetNode;
+                do {
+                    targetNode = {
+                        x: Math.floor(Math.random() * cols),
+                        y: Math.floor(Math.random() * rows)
+                    };
+                } while (grid[targetNode.y][targetNode.x] !== 0);
+
+                this.target = targetNode;
+                this.path = findPath({x: Math.round(this.x), y: Math.round(this.y)}, this.target);
+                
+                if (this.path.length > 0) {
+                    this.state = "MOVING";
+                    logMessage(`AGV #${this.id} dispatched toward rack (${this.target.x}, ${this.target.y}).`);
+                } else {
+                    logMessage(`AGV #${this.id} blocked! Waiting for clearance.`);
+                }
+            }
+
+            update() {
+                if (this.path.length > 0) {
+                    let nextStep = this.path[0];
+                    // Simple movement interpolation
+                    let dx = nextStep.x - this.x;
+                    let dy = nextStep.y - this.y;
+                    let dist = Math.hypot(dx, dy);
+
+                    if (dist < 0.05) {
+                        this.x = nextStep.x;
+                        this.y = nextStep.y;
+                        this.path.shift();
+
+                        // Reached destination
+                        if (this.path.length === 0) {
+                            if (this.state === "MOVING") {
+                                this.state = "RETURNING";
+                                logMessage(`AGV #${this.id} reached pod. Returning to Packing Station.`);
+                                this.path = findPath({x: Math.round(this.x), y: Math.round(this.y)}, stations[1]);
+                            } else if (this.state === "RETURNING") {
+                                deliveredCount++;
+                                document.getElementById('deliveredCount').innerText = deliveredCount;
+                                logMessage(`AGV #${this.id} delivered pod successfully! Assigned new cycle.`);
+                                this.state = "IDLE";
+                                this.assignNewTask();
+                            }
+                        }
+                    } else {
+                        let speed = 0.04;
+                        this.x += (dx / dist) * speed;
+                        this.y += (dy / dist) * speed;
+                    }
+                } else if (this.state === "IDLE") {
+                    this.assignNewTask();
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x * tileSize + tileSize/2, this.y * tileSize + tileSize/2, 16, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.fillStyle = '#000000';
+                ctx.font = '10px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(`A${this.id}`, this.x * tileSize + tileSize/2, this.y * tileSize + tileSize/2 + 3);
+            }
+        }
+
+        // Standard BFS Pathfinding on Grid
+        function findPath(start, goal) {
+            let queue = [[start]];
+            let visited = Array(rows).fill(0).map(() => Array(cols).fill(false));
+            visited[start.y][start.x] = true;
+
+            while (queue.length > 0) {
+                let path = queue.shift();
+                let curr = path[path.length - 1];
+
+                if (curr.x === goal.x && curr.y === goal.y) {
+                    return path.slice(1); // Exclude current position
+                }
+
+                let neighbors = [
+                    {x: curr.x + 1, y: curr.y},
+                    {x: curr.x - 1, y: curr.y},
+                    {x: curr.x, y: curr.y + 1},
+                    {x: curr.x, y: curr.y - 1}
+                ];
+
+                for (let n of neighbors) {
+                    if (n.x >= 0 && n.x < cols && n.y >= 0 && n.y < rows) {
+                        if (!visited[n.y][n.x] && grid[n.y][n.x] !== 1 && grid[n.y][n.x] !== 2) {
+                            visited[n.y][n.x] = true;
+                            queue.push([...path, n]);
+                        }
+                    }
+                }
+            }
+            return [];
+        }
+
+        function spawnAGV() {
+            agvs.push(new AGV(agvs.length + 1));
+            document.getElementById('agvCount').innerText = agvs.length;
+        }
+
+        function toggleMode() {
+            blockMode = !blockMode;
+            document.getElementById('modeText').innerText = blockMode ? "Block Aisle" : "Clear Aisle";
+        }
+
+        // Canvas click handler to toggle obstacles
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) / (canvas.clientWidth / cols));
+            const y = Math.floor((e.clientY - rect.top) / (canvas.clientHeight / rows));
+
+            if (x >= 0 && x < cols && y >= 0 && y < rows) {
+                if (grid[y][x] !== 1) { // Don't overwrite structural racks
+                    grid[y][x] = blockMode ? 2 : 0;
+                    logMessage(`Warehouse floor map updated at (${x}, ${y}): Obstacle ${blockMode ? 'Placed' : 'Cleared'}.`);
+                }
+            }
+        });
+
+        function drawWarehouse() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Grid
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
+
+                    if (grid[r][c] === 1) {
+                        ctx.fillStyle = '#334155'; // Storage Rack
+                        ctx.fillRect(c * tileSize + 2, r * tileSize + 2, tileSize - 4, tileSize - 4);
+                        ctx.fillStyle = '#94a3b8';
+                        ctx.font = '9px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText("RACK", c * tileSize + tileSize/2, r * tileSize + tileSize/2 + 3);
+                    } else if (grid[r][c] === 2) {
+                        ctx.fillStyle = '#ef4444'; // Spill / Blockage
+                        ctx.fillRect(c * tileSize + 2, r * tileSize + 2, tileSize - 4, tileSize - 4);
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = '9px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText("SPILL", c * tileSize + tileSize/2, r * tileSize + tileSize/2 + 3);
+                    }
+                }
+            }
+
+            // Draw Stations
+            stations.forEach((s, idx) => {
+                ctx.fillStyle = idx === 0 ? '#0284c7' : '#16a34a';
+                ctx.fillRect(s.x * tileSize + 5, s.y * tileSize + 5, tileSize - 10, tileSize - 10);
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '10px bold sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(idx === 0 ? "START" : "PACK", s.x * tileSize + tileSize/2, s.y * tileSize + tileSize/2 + 3);
+            });
+
+            // Update & Draw AGVs
+            agvs.forEach(agv => {
+                agv.update();
+                agv.draw();
+            });
+        }
+
+        // Initialize with 2 AGVs
+        spawnAGV();
+        spawnAGV();
+
+        // Main animation loop
+        setInterval(drawWarehouse, 50);
+    </script>
+</body>
+</html>
