@@ -22,5 +22,30 @@
 ## ✨ Key Features
 
 * **🧠 Grid-Based BFS Pathfinding:** Implements Breadth-First Search to calculate optimal collision-free routes across the warehouse floor matrix.
-* **🤖 Multi-AGV Fleet Dispatching:** Dispatch and manage multiple AGVs simultaneously, each tracking independent pick-up, transit
-* 
+* **🤖 Multi-AGV Fleet Dispatching:** Dispatch and manage multiple AGVs simultaneously, each tracking independent pick-up, transit, and delivery states.
+* **⚠️ Interactive Obstacle Placement:** Click anywhere on the warehouse floor grid in real time to place or clear aisle blockages and spills, forcing AGVs to dynamically recalculate paths.
+* **📊 Live Warehouse Telemetry:** Real-time logging console tracking task assignments, routing status, obstacles, and completed delivery metrics.
+* **🎨 Modern Cyberpunk Warehouse UI:** Dark-mode canvas layout featuring clearly designated storage racks, charging start docks, and packing stations.
+
+---
+
+## 🛠️ Tech Stack
+
+* **Frontend:** Vanilla HTML5, CSS3
+* **Rendering Engine:** HTML5 2D Canvas API
+* **Algorithm & Logic:** Vanilla JavaScript (ES6+ Classes, Grid Matrix Manipulations, BFS Pathfinding)
+
+---
+
+## 🏗️ Pathfinding & Dispatch Logic
+
+The simulation coordinates AGV routing through grid-based traversal:
+
+```mermaid
+graph TD;
+    A[AGV Assigned New Task / Target] --> B[Run BFS Pathfinding on Warehouse Grid];
+    B --> C{Is Path Found?};
+    C -- Yes --> D[Follow Waypoints to Target Pod];
+    C -- No --> E[Wait for Clearance / Obstacle Removal];
+    D --> F[Arrive at Pod & Return to Packing Station];
+    F --> G[Increment Delivery Count & Assign New Cycle];
